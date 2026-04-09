@@ -164,7 +164,7 @@ class Flow(Generic[StateT]):
         self.start_node = node
         return node
 
-    def get_next_node(
+    def _get_next_node(
         self,
         current_node: Node[object, object, object],
         action: str,
@@ -184,7 +184,7 @@ class Flow(Generic[StateT]):
 
         return next_node
 
-    async def finalize(
+    async def _finalize(
         self,
         ctx: FlowContext[StateT],
         result: object | None,
@@ -205,6 +205,6 @@ class Flow(Generic[StateT]):
         while current_node is not None:
             step = await current_node.run(ctx)
             result = step.output
-            current_node = self.get_next_node(current_node, step.action)
+            current_node = self._get_next_node(current_node, step.action)
 
-        return await self.finalize(ctx, result)
+        return await self._finalize(ctx, result)
