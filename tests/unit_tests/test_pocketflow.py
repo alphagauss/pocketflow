@@ -1,170 +1,144 @@
 import asyncio
 
 from pocketflow import (
-    AsyncFlow,
-    AsyncNode,
     Flow,
+    FlowContext,
     Node,
+    RetryPolicy,
+    StepResult,
 )
 
 
-class AddValueNode(Node[None, int, str | None]):
-    def __init__(self, key: str, value: int, action: str | None = None) -> None:
+class AddValueNode(Node[dict[str, object], int, int]):
+    def __init__(self, key: str, value: int, action: str = "") -> None:
         super().__init__()
         self.key = key
         self.value = value
         self.action = action
 
-    def prep(self, shared: dict[str, object]) -> None:
-        return None
-
-    def exec(self, prep_result: None) -> int:
-        return self.value
-
-    def post(
-        self,
-        shared: dict[str, object],
-        prep_result: None,
-        exec_result: int,
-    ) -> str | None:
-        shared[self.key] = exec_result
-        return self.action
+    async def run_step(self, ctx: FlowContext[dict[str, object]]) -> StepResult[int]:
+        ctx.state[self.key] = self.value
+        return StepResult(output=self.value, action=self.action)
 
 
-class RetryNode(Node[None, str, str]):
+class ParamNode(Node[dict[str, object], str, int]):
+    async def run_step(self, ctx: FlowContext[dict[str, object]]) -> StepResult[int]:
+        prefix = str(ctx.params["prefix"])
+        value = int(ctx.params["value"])
+        prepared = f"{prefix}:{value}"
+        ctx.state["prepared"] = prepared
+        ctx.state["value"] = value
+        return StepResult(output=value)
+
+
+class RetryNode(Node[dict[str, object], None, str]):
     def __init__(self) -> None:
-        super().__init__(max_retries=3, wait=0)
+        super().__init__(retry=RetryPolicy(max_retries=3, wait=0))
         self.attempts = 0
 
-    def prep(self, shared: dict[str, object]) -> None:
-        return None
-
-    def exec(self, prep_result: None) -> str:
+    async def run_step(self, ctx: FlowContext[dict[str, object]]) -> StepResult[str]:
         self.attempts += 1
         if self.attempts < 3:
             raise ValueError("temporary error")
-        return "done"
-
-    def post(
-        self,
-        shared: dict[str, object],
-        prep_result: None,
-        exec_result: str,
-    ) -> str:
-        shared["retry_result"] = exec_result
-        return exec_result
+        ctx.state["retry_result"] = "done"
+        return StepResult(output="done")
 
 
-class FallbackNode(Node[None, str, str]):
+class FallbackNode(Node[dict[str, object], None, str]):
     def __init__(self) -> None:
-        super().__init__(max_retries=2, wait=0)
+        super().__init__(retry=RetryPolicy(max_retries=2, wait=0))
         self.attempts = 0
 
-    def prep(self, shared: dict[str, object]) -> None:
-        return None
-
-    def exec(self, prep_result: None) -> str:
+    async def run_step(self, ctx: FlowContext[dict[str, object]]) -> StepResult[str]:
         self.attempts += 1
         raise RuntimeError("always fail")
 
-    def exec_fallback(self, prep_result: None, exc: Exception) -> str:
-        return f"fallback:{exc}"
-
-    def post(
+    async def exec_fallback(
         self,
-        shared: dict[str, object],
-        prep_result: None,
-        exec_result: str,
-    ) -> str:
-        shared["fallback_result"] = exec_result
-        return exec_result
+        ctx: FlowContext[dict[str, object]],
+        exc: Exception,
+    ) -> StepResult[str]:
+        result = f"fallback:{exc}"
+        ctx.state["fallback_result"] = result
+        return StepResult(output=result)
 
 
-class AsyncRecordNode(AsyncNode[None, str, str | None]):
-    def __init__(self, key: str, value: str, action: str | None = None) -> None:
-        super().__init__()
-        self.key = key
-        self.value = value
-        self.action = action
+def test_flow_uses_then_and_connect_on() -> None:
+    async def run_test() -> None:
+        first = AddValueNode("first", 1, action="branch")
+        second = AddValueNode("second", 2)
+        third = AddValueNode("third", 3)
 
-    async def prep_async(self, shared: dict[str, object]) -> None:
-        return None
+        first.then(second)
+        first.connect_on("branch", third)
 
-    async def exec_async(self, prep_result: None) -> str:
-        await asyncio.sleep(0)
-        return self.value
+        flow = Flow[dict[str, object]](start=first)
+        state: dict[str, object] = {}
 
-    async def post_async(
-        self,
-        shared: dict[str, object],
-        prep_result: None,
-        exec_result: str,
-    ) -> str | None:
-        shared[self.key] = exec_result
-        return self.action
+        result = await flow.run(state)
 
+        assert result == 3
+        assert state == {"first": 1, "third": 3}
 
-def test_flow_uses_connect_and_connect_on() -> None:
-    first = AddValueNode("first", 1, action="branch")
-    second = AddValueNode("second", 2)
-    third = AddValueNode("third", 3)
-
-    first.connect(second)
-    first.connect_on("branch", third)
-
-    flow = Flow[None, str | None](start=first)
-    shared: dict[str, object] = {}
-
-    result = flow.run(shared)
-
-    assert result is None
-    assert shared == {"first": 1, "third": 3}
+    asyncio.run(run_test())
 
 
 def test_flow_set_start_configures_entry_node() -> None:
-    start = AddValueNode("value", 10)
-    flow = Flow[None, str | None]()
-    shared: dict[str, object] = {}
+    async def run_test() -> None:
+        start = AddValueNode("value", 10)
+        flow = Flow[dict[str, object]]()
+        state: dict[str, object] = {}
 
-    returned = flow.set_start(start)
-    result = flow.run(shared)
+        returned = flow.set_start(start)
+        result = await flow.run(state)
 
-    assert returned is start
-    assert result is None
-    assert shared == {"value": 10}
+        assert returned is start
+        assert result == 10
+        assert state == {"value": 10}
+
+    asyncio.run(run_test())
 
 
 def test_node_retries_until_success() -> None:
-    node = RetryNode()
-    shared: dict[str, object] = {}
+    async def run_test() -> None:
+        node = RetryNode()
+        ctx = FlowContext(state={})
 
-    result = node.run(shared)
+        result = await node.run(ctx)
 
-    assert node.attempts == 3
-    assert result == "done"
-    assert shared["retry_result"] == "done"
+        assert node.attempts == 3
+        assert result.output == "done"
+        assert ctx.state["retry_result"] == "done"
+
+    asyncio.run(run_test())
 
 
 def test_node_uses_fallback_after_final_retry() -> None:
-    node = FallbackNode()
-    shared: dict[str, object] = {}
+    async def run_test() -> None:
+        node = FallbackNode()
+        ctx = FlowContext(state={})
 
-    result = node.run(shared)
+        result = await node.run(ctx)
 
-    assert node.attempts == 2
-    assert result == "fallback:always fail"
-    assert shared["fallback_result"] == "fallback:always fail"
+        assert node.attempts == 2
+        assert result.output == "fallback:always fail"
+        assert ctx.state["fallback_result"] == "fallback:always fail"
+
+    asyncio.run(run_test())
 
 
-def test_async_flow_runs_async_nodes() -> None:
-    first = AsyncRecordNode("first", "A", action="next")
-    second = AsyncRecordNode("second", "B")
-    first.connect_on("next", second)
+def test_prep_reads_params_from_context() -> None:
+    async def run_test() -> None:
+        node = ParamNode()
+        flow = Flow[dict[str, object]](start=node)
+        state: dict[str, object] = {}
 
-    flow = AsyncFlow[None, str | None](start=first)
-    shared: dict[str, object] = {}
+        result = await flow.run(
+            state,
+            params={"prefix": "item", "value": 7},
+        )
 
-    result = asyncio.run(flow.run_async(shared))
+        assert result == 7
+        assert state == {"prepared": "item:7", "value": 7}
 
-    assert result is None
-    assert shared == {"first": "A", "second": "B"}
+    asyncio.run(run_test())
