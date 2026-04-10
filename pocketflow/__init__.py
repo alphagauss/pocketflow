@@ -3,12 +3,8 @@ from __future__ import annotations
 import asyncio
 import warnings
 from dataclasses import dataclass, field
-from typing import TypeAlias
-
-Params: TypeAlias = dict[str, object]
 
 __all__ = [
-    "Params",
     "RetryPolicy",
     "FlowContext",
     "StepResult",
@@ -21,13 +17,13 @@ __all__ = [
 class RetryPolicy:
     """节点重试策略。"""
 
-    max_retries: int = 1
+    max_attempts: int = 1
     wait: float = 0.0
 
     def __post_init__(self) -> None:
         """校验重试配置。"""
-        if self.max_retries < 1:
-            raise ValueError("`max_retries` 至少应为 1。")
+        if self.max_attempts < 1:
+            raise ValueError("`max_attempts` 至少应为 1。")
 
         if self.wait < 0:
             raise ValueError("`wait` 不能为负数。")
@@ -35,21 +31,32 @@ class RetryPolicy:
 
 @dataclass(slots=True)
 class FlowContext:
-    """流程运行时上下文。"""
+    """流程运行时上下文基类。
 
-    params: Params = field(default_factory=dict)
+    业务项目通常会继承这个类，补充流程共享的数据字段。
+    `params` 用于放运行时传入的轻量参数。
+    """
+
+    params: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
 class StepResult:
-    """单个节点执行后的结构化结果。"""
+    """单个节点执行结果。
+
+    `output` 是当前节点产出的结果；
+    `action` 用于选择分支，空字符串表示走默认后继。
+    """
 
     output: object | None = None
     action: str = ""
 
 
 class Node:
-    """异步节点基类。"""
+    """异步节点基类。
+
+    子类通常只需要实现 `run_step()`。
+    """
 
     successors: dict[str, Node]
     next_node: Node | None
@@ -70,7 +77,7 @@ class Node:
         node: Node,
         action: str,
     ) -> Node:
-        """连接后继节点。
+        """连接命名分支后继节点。
 
         Args:
             node: 后继节点。
@@ -89,7 +96,7 @@ class Node:
         return node
 
     def then(self, node: Node) -> Node:
-        """连接默认顺序后继节点。"""
+        """连接默认后继节点。"""
         if self.next_node is not None:
             warnings.warn(
                 "默认后继节点将被覆盖。",
@@ -104,7 +111,7 @@ class Node:
         action: str,
         node: Node,
     ) -> Node:
-        """为指定动作连接后继节点。"""
+        """为指定动作连接分支后继节点。"""
         return self._connect(node=node, action=action)
 
     async def exec_fallback(
@@ -112,23 +119,26 @@ class Node:
         ctx: FlowContext,
         exc: Exception,
     ) -> StepResult:
-        """在最后一次重试仍失败时执行兜底逻辑。"""
+        """在最后一次重试失败后执行兜底逻辑。"""
         raise exc
 
     async def run_step(
         self,
         ctx: FlowContext,
     ) -> StepResult:
-        """执行单个节点的核心逻辑。"""
+        """执行节点逻辑。
+
+        子类应覆盖此方法，并返回 `StepResult`。
+        """
         raise NotImplementedError
 
     async def run(self, ctx: FlowContext) -> StepResult:
-        """带重试地执行单个节点。"""
-        for retry_index in range(self.retry.max_retries):
+        """按重试策略执行节点。"""
+        for retry_index in range(self.retry.max_attempts):
             try:
                 return await self.run_step(ctx)
             except Exception as exc:
-                is_last_retry = retry_index == self.retry.max_retries - 1
+                is_last_retry = retry_index == self.retry.max_attempts - 1
                 if is_last_retry:
                     return await self.exec_fallback(ctx, exc)
 
@@ -142,7 +152,7 @@ class Flow:
     """异步流程控制器。
 
     流程会根据节点返回的 `StepResult.action` 选择后继节点。
-    空字符串表示流程结束。
+    当 `action` 为空字符串时，会进入默认后继；若默认后继不存在，流程结束。
     """
 
     start_node: Node | None
@@ -164,7 +174,7 @@ class Flow:
         current_node: Node,
         action: str,
     ) -> Node | None:
-        """根据动作名获取后继节点。"""
+        """根据动作名获取下一个节点。"""
         if action == "":
             return current_node.next_node
 
@@ -188,7 +198,7 @@ class Flow:
         return result
 
     async def run(self, ctx: FlowContext) -> object | None:
-        """从起始节点开始驱动整个流程。"""
+        """从起始节点开始执行流程。"""
         current_node = self.start_node
         result: object | None = None
 

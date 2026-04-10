@@ -39,7 +39,7 @@ class ParamNode(Node):
 
 class RetryNode(Node):
     def __init__(self) -> None:
-        super().__init__(retry=RetryPolicy(max_retries=3, wait=0))
+        super().__init__(retry=RetryPolicy(max_attempts=3, wait=0))
         self.attempts = 0
 
     async def run_step(self, ctx: DemoContext) -> StepResult:
@@ -52,7 +52,7 @@ class RetryNode(Node):
 
 class FallbackNode(Node):
     def __init__(self) -> None:
-        super().__init__(retry=RetryPolicy(max_retries=2, wait=0))
+        super().__init__(retry=RetryPolicy(max_attempts=2, wait=0))
         self.attempts = 0
 
     async def run_step(self, ctx: DemoContext) -> StepResult:
