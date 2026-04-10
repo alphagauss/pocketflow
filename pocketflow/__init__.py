@@ -3,13 +3,9 @@ from __future__ import annotations
 import asyncio
 import warnings
 from dataclasses import dataclass, field
-from typing import Generic, TypeAlias, TypeVar
+from typing import TypeAlias
 
 Params: TypeAlias = dict[str, object]
-
-StateT = TypeVar("StateT")
-InputT = TypeVar("InputT")
-OutputT = TypeVar("OutputT")
 
 __all__ = [
     "Params",
@@ -38,26 +34,25 @@ class RetryPolicy:
 
 
 @dataclass(slots=True)
-class FlowContext(Generic[StateT]):
+class FlowContext:
     """流程运行时上下文。"""
 
-    state: StateT
     params: Params = field(default_factory=dict)
 
 
 @dataclass(slots=True)
-class StepResult(Generic[OutputT]):
+class StepResult:
     """单个节点执行后的结构化结果。"""
 
-    output: OutputT | None = None
+    output: object | None = None
     action: str = ""
 
 
-class Node(Generic[StateT, InputT, OutputT]):
+class Node:
     """异步节点基类。"""
 
-    successors: dict[str, Node[object, object, object]]
-    next_node: Node[object, object, object] | None
+    successors: dict[str, Node]
+    next_node: Node | None
     retry: RetryPolicy
 
     def __init__(self, retry: RetryPolicy | None = None) -> None:
@@ -72,9 +67,9 @@ class Node(Generic[StateT, InputT, OutputT]):
 
     def _connect(
         self,
-        node: Node[object, object, object],
+        node: Node,
         action: str,
-    ) -> Node[object, object, object]:
+    ) -> Node:
         """连接后继节点。
 
         Args:
@@ -93,7 +88,7 @@ class Node(Generic[StateT, InputT, OutputT]):
         self.successors[action] = node
         return node
 
-    def then(self, node: Node[object, object, object]) -> Node[object, object, object]:
+    def then(self, node: Node) -> Node:
         """连接默认顺序后继节点。"""
         if self.next_node is not None:
             warnings.warn(
@@ -107,27 +102,27 @@ class Node(Generic[StateT, InputT, OutputT]):
     def connect_on(
         self,
         action: str,
-        node: Node[object, object, object],
-    ) -> Node[object, object, object]:
+        node: Node,
+    ) -> Node:
         """为指定动作连接后继节点。"""
         return self._connect(node=node, action=action)
 
     async def exec_fallback(
         self,
-        ctx: FlowContext[StateT],
+        ctx: FlowContext,
         exc: Exception,
-    ) -> StepResult[OutputT]:
+    ) -> StepResult:
         """在最后一次重试仍失败时执行兜底逻辑。"""
         raise exc
 
     async def run_step(
         self,
-        ctx: FlowContext[StateT],
-    ) -> StepResult[OutputT]:
+        ctx: FlowContext,
+    ) -> StepResult:
         """执行单个节点的核心逻辑。"""
         raise NotImplementedError
 
-    async def run(self, ctx: FlowContext[StateT]) -> StepResult[OutputT]:
+    async def run(self, ctx: FlowContext) -> StepResult:
         """带重试地执行单个节点。"""
         for retry_index in range(self.retry.max_retries):
             try:
@@ -143,32 +138,32 @@ class Node(Generic[StateT, InputT, OutputT]):
         raise RuntimeError("节点执行未产生结果，请检查重试配置。")
 
 
-class Flow(Generic[StateT]):
+class Flow:
     """异步流程控制器。
 
     流程会根据节点返回的 `StepResult.action` 选择后继节点。
     空字符串表示流程结束。
     """
 
-    start_node: Node[object, object, object] | None
+    start_node: Node | None
 
-    def __init__(self, start: Node[object, object, object] | None = None) -> None:
+    def __init__(self, start: Node | None = None) -> None:
         """初始化流程。"""
         self.start_node = start
 
     def set_start(
         self,
-        node: Node[object, object, object],
-    ) -> Node[object, object, object]:
+        node: Node,
+    ) -> Node:
         """设置流程起始节点。"""
         self.start_node = node
         return node
 
     def _get_next_node(
         self,
-        current_node: Node[object, object, object],
+        current_node: Node,
         action: str,
-    ) -> Node[object, object, object] | None:
+    ) -> Node | None:
         """根据动作名获取后继节点。"""
         if action == "":
             return current_node.next_node
@@ -186,19 +181,14 @@ class Flow(Generic[StateT]):
 
     async def _finalize(
         self,
-        ctx: FlowContext[StateT],
+        ctx: FlowContext,
         result: object | None,
     ) -> object | None:
         """在流程结束后生成最终返回值。"""
         return result
 
-    async def run(
-        self,
-        state: StateT,
-        params: Params | None = None,
-    ) -> object | None:
+    async def run(self, ctx: FlowContext) -> object | None:
         """从起始节点开始驱动整个流程。"""
-        ctx = FlowContext(state=state, params=dict(params or {}))
         current_node = self.start_node
         result: object | None = None
 
