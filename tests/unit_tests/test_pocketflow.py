@@ -1,6 +1,8 @@
 import asyncio
 from dataclasses import dataclass, field
 
+import pytest
+
 from pocketflow import (
     Flow,
     FlowContext,
@@ -89,18 +91,13 @@ def test_flow_uses_then_and_connect_on() -> None:
     asyncio.run(run_test())
 
 
-def test_flow_set_start_configures_entry_node() -> None:
+def test_flow_without_start_raises_error() -> None:
     async def run_test() -> None:
-        start = AddValueNode("value", 10)
         flow = Flow()
         ctx = DemoContext()
 
-        returned = flow.set_start(start)
-        result = await flow.run(ctx)
-
-        assert returned is start
-        assert result == 10
-        assert ctx.values == {"value": 10}
+        with pytest.raises(ValueError, match="流程缺少起始节点"):
+            await flow.run(ctx)
 
     asyncio.run(run_test())
 

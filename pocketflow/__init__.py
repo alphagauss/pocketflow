@@ -161,14 +161,6 @@ class Flow:
         """初始化流程。"""
         self.start_node = start
 
-    def set_start(
-        self,
-        node: Node,
-    ) -> Node:
-        """设置流程起始节点。"""
-        self.start_node = node
-        return node
-
     def _get_next_node(
         self,
         current_node: Node,
@@ -199,6 +191,9 @@ class Flow:
 
     async def run(self, ctx: FlowContext) -> object | None:
         """从起始节点开始执行流程。"""
+        if self.start_node is None:
+            raise ValueError("流程缺少起始节点 `start_node`。")
+
         current_node = self.start_node
         result: object | None = None
 
